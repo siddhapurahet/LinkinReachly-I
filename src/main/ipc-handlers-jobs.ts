@@ -27,7 +27,14 @@ const JOB_LISTING_SCROLL_PASSES = 10
 /** After smart search enrichment the active tab may be a job detail page — load-more re-opens SERP and scrolls harder. */
 const JOB_LISTING_LOAD_MORE_SCROLL_PASSES = 14
 
-const SMART_SEARCH_TOTAL_TIMEOUT_MS = 2 * 60 * 1000
+/**
+ * Smart-search deadline. With FAST_ENRICH_TOP=25 (full SERP page) and the
+ * NAVIGATE retry path, we give 6 min so a slow LinkedIn run still completes
+ * instead of timing out partway through enrichment.
+ */
+const SMART_SEARCH_TOTAL_TIMEOUT_MS = 6 * 60 * 1000
+/** Cap the jobs sent to the LLM overlay so it can't dominate the total budget. Remaining jobs keep heuristic scores. */
+const LLM_OVERLAY_JOB_CAP = 25
 
 type HandlerContext = {
   sendCommand: (
@@ -140,12 +147,13 @@ async function overlayLlmJobMatchScores<
     resumeMatchPercent?: number
     resumeMatchReason?: string
   }
->(ctx: HandlerContext, jobs: T[]): Promise<T[]> {
+>(ctx: HandlerContext, jobs: T[], cap?: number): Promise<T[]> {
   if (jobs.length === 0) return jobs
   const settings = ctx.loadSettings()
   const profile = resolveProfileForJobRanking(ctx)
   const matchCtx = buildCandidateContextForJobsMatch(settings, profile)
-  const forLlm = jobs
+  const capped = typeof cap === 'number' && cap > 0 ? jobs.slice(0, cap) : jobs
+  const forLlm = capped
     .filter((j): j is T & { jobUrl: string } => Boolean(j.jobUrl && j.title))
     .map((j) => ({
       jobUrl: j.jobUrl as string,
@@ -323,7 +331,7 @@ export function registerJobsHandlers(ctx: HandlerContext): Map<string, (payload:
         rankedItems = items as typeof rankedItems
       }
       try {
-        rankedItems = await withSearchAbort(overlayLlmJobMatchScores(ctx, rankedItems))
+        rankedItems = await withSearchAbort(overlayLlmJobMatchScores(ctx, rankedItems, LLM_OVERLAY_JOB_CAP))
       } catch (llmErr) {
         if (isSmartSearchAbortError(llmErr)) throw llmErr
         appLog.warn('[jobs:search] LLM scoring failed', llmErr)
@@ -468,7 +476,7 @@ export function registerJobsHandlers(ctx: HandlerContext): Map<string, (payload:
         rankedNew = items as typeof rankedNew
       }
       try {
-        rankedNew = await overlayLlmJobMatchScores(ctx, rankedNew)
+        rankedNew = await overlayLlmJobMatchScores(ctx, rankedNew, LLM_OVERLAY_JOB_CAP)
       } catch (llmErr) {
         appLog.warn('[jobs:loadMore] LLM scoring failed', llmErr)
       }
@@ -600,6 +608,11 @@ export function registerJobsHandlers(ctx: HandlerContext): Map<string, (payload:
       sourceUrlRaw ? undefined : smartPayload?.location
     )
     const startedAt = Date.now()
+    appLog.info('[smart-search] start', {
+      background: rawBackground.slice(0, 80),
+      location: normalizedSearch.location,
+      totalBudgetMs: SMART_SEARCH_TOTAL_TIMEOUT_MS
+    })
     const priorAbort = ctx.getActiveSearchAbortController()
     if (priorAbort && !priorAbort.signal.aborted) {
       priorAbort.abort()
@@ -641,7 +654,10 @@ export function registerJobsHandlers(ctx: HandlerContext): Map<string, (payload:
       const profileSource: 'settings' | 'linkedin_profile' | 'none' =
         (settings.userBackground || '').trim() || (settings.resumeText || '').trim() ? 'settings' : 'none'
 
+      const tPing = Date.now()
+      appLog.info('[smart-search] phase=ping start')
       const ping = await withSmartSearchAbort(ctx.sendCommand('PING', {}, 10_000))
+      appLog.info('[smart-search] phase=ping done', { ms: Date.now() - tPing, ok: ping.ok, detail: ping.detail || undefined })
       if (!ping.ok) {
         const detail =
           ping.detail === 'open_a_linkedin_tab' ? 'Open a linkedin.com tab in Chrome.' : ping.detail
@@ -703,7 +719,21 @@ export function registerJobsHandlers(ctx: HandlerContext): Map<string, (payload:
         totalJobsFound: 0
       })
 
-      const nav = await withSmartSearchAbort(ctx.sendCommand('NAVIGATE', { url: searchUrl }, 30_000))
+      const tNav = Date.now()
+      appLog.info('[smart-search] phase=navigate start', { url: searchUrl })
+      let nav: BridgeResultMsg
+      try {
+        nav = await withSmartSearchAbort(ctx.sendCommand('NAVIGATE', { url: searchUrl }, 60_000))
+      } catch (navErr) {
+        // Retry once on bridge timeout — LinkedIn occasionally takes >60s on a cold load.
+        // Skip retry for cancellation/total-timeout (those should propagate).
+        const navMsg = navErr instanceof Error ? navErr.message : String(navErr)
+        if (isSmartSearchAbortError(navErr) || !navMsg.includes('Command timeout')) throw navErr
+        appLog.warn('[smart-search] phase=navigate timeout, retrying once', { ms: Date.now() - tNav, detail: navMsg })
+        await smartWait(1500)
+        nav = await withSmartSearchAbort(ctx.sendCommand('NAVIGATE', { url: searchUrl }, 60_000))
+      }
+      appLog.info('[smart-search] phase=navigate done', { ms: Date.now() - tNav, ok: nav.ok, detail: nav.detail || undefined })
       if (!nav.ok) {
         ctx.appendHistoryEvent({
           profileUrl: searchUrl,
@@ -721,7 +751,15 @@ export function registerJobsHandlers(ctx: HandlerContext): Map<string, (payload:
       }
       await smartWait(500)
 
-      const FAST_SCROLL_PASSES = 8
+      /**
+       * Enrichment (clicking each job card to load the description) is the biggest
+       * variable cost in the smart search. LinkedIn often navigates the tab to
+       * /jobs/view/<id> on click, costing 3–6s per card to recover. We enrich the
+       * top 10 cards (still gives the LLM enough signal to score) and rely on
+       * title/company/location for the rest. All cards on the SERP are still
+       * returned to the renderer.
+       */
+      const FAST_SCROLL_PASSES = 10
       const FAST_ENRICH_TOP = 10
 
       type ExtractedJobItem = {
@@ -758,7 +796,7 @@ export function registerJobsHandlers(ctx: HandlerContext): Map<string, (payload:
           ctx.sendCommand(
             'EXTRACT_JOB_LISTINGS',
             { scrollPasses: FAST_SCROLL_PASSES, enrichTop: FAST_ENRICH_TOP, allowViewPage: true },
-            90_000
+            180_000
           )
         )
         if (directResults.ok) {
@@ -848,17 +886,21 @@ export function registerJobsHandlers(ctx: HandlerContext): Map<string, (payload:
           ]
         }
       } else {
+        const tExtract = Date.now()
+        appLog.info('[smart-search] phase=extract start', { scrollPasses: FAST_SCROLL_PASSES, enrichTop: FAST_ENRICH_TOP })
         let results = await withSmartSearchAbort(
           ctx.sendCommand(
             'EXTRACT_JOB_LISTINGS',
             { scrollPasses: FAST_SCROLL_PASSES, enrichTop: FAST_ENRICH_TOP },
-            90_000
+            180_000
           )
         )
+        appLog.info('[smart-search] phase=extract done', { ms: Date.now() - tExtract, ok: results.ok, detail: results.detail || undefined })
         // If the browser landed on /jobs/view/ instead of the search page, re-navigate.
         if (!results.ok && String(results.detail || '').includes('wrong_page:jobs_view')) {
-          appLog.info('[jobs:smartSearch] landed on /jobs/view/ instead of search results, re-navigating')
-          await withSmartSearchAbort(ctx.sendCommand('NAVIGATE', { url: searchUrl }, 30_000))
+          const tRetry = Date.now()
+          appLog.info('[smart-search] phase=retry start (landed on /jobs/view/, re-navigating)')
+          await withSmartSearchAbort(ctx.sendCommand('NAVIGATE', { url: searchUrl }, 60_000))
           await smartWait(3000)
           results = await withSmartSearchAbort(
             ctx.sendCommand(
@@ -867,6 +909,7 @@ export function registerJobsHandlers(ctx: HandlerContext): Map<string, (payload:
               90_000
             )
           )
+          appLog.info('[smart-search] phase=retry done', { ms: Date.now() - tRetry, ok: results.ok, detail: results.detail || undefined })
         }
         if (!results.ok) {
           ctx.appendHistoryEvent({
@@ -960,7 +1003,10 @@ export function registerJobsHandlers(ctx: HandlerContext): Map<string, (payload:
       })
 
       try {
-        rankedJobs = await withSmartSearchAbort(overlayLlmJobMatchScores(ctx, rankedJobs))
+        const tLlm = Date.now()
+        appLog.info('[smart-search] phase=llm start', { jobs: rankedJobs.length, cap: LLM_OVERLAY_JOB_CAP })
+        rankedJobs = await withSmartSearchAbort(overlayLlmJobMatchScores(ctx, rankedJobs, LLM_OVERLAY_JOB_CAP))
+        appLog.info('[smart-search] phase=llm done', { ms: Date.now() - tLlm })
       } catch (llmErr) {
         if (isSmartSearchAbortError(llmErr)) throw llmErr
         appLog.warn('[smart-search] LLM scoring failed, using heuristic scores', llmErr)
@@ -1054,6 +1100,7 @@ export function registerJobsHandlers(ctx: HandlerContext): Map<string, (payload:
       const rawDetail = e instanceof Error ? e.message : String(e)
       const canceled = isSmartSearchAbortError(e)
       const timedOut = /jobs_smart_search_timeout/i.test(rawDetail)
+      appLog.warn('[smart-search] failed', { totalMs: Date.now() - startedAt, timedOut, canceled, detail: rawDetail })
       const detail = canceled
         ? timedOut
           ? `Smart search timed out after ${Math.round(SMART_SEARCH_TOTAL_TIMEOUT_MS / 60_000)} minutes.`
