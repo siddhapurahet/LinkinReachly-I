@@ -488,43 +488,54 @@ async function runLoop(): Promise<void> {
           break
         }
 
-        // Non-Easy-Apply jobs: skip instead of erroring
+        // Non-Easy-Apply jobs: keep in queue as 'error' so the user sees and decides.
         const notEasyApply = !result.ok && /easy_apply_not_available_for_job/i.test(resultDetail)
+        // Track "classified as un-applicable for a specific reason" so the downstream
+        // hardFail check doesn't treat these as consecutive-failure-worthy (they used
+        // to be 'skipped', but we now keep them in the queue as 'error' so the user
+        // can retry; the queue should still advance without treating them as runner failures).
+        let itemAutoClassified = false
         if (notEasyApply) {
-          qlog('queue.skip_not_easy_apply', { itemId: pending.id, jobTitle: pending.jobTitle })
+          qlog('queue.error_not_easy_apply', { itemId: pending.id, jobTitle: pending.jobTitle })
           const recId = ensureTerminalRecordId('Job does not offer Easy Apply — external application only.', 'blocked')
-          updateItemStatus(pending.id, 'skipped', {
+          updateItemStatus(pending.id, 'error', {
             applicationRecordId: recId,
-            detail: 'Not Easy Apply — skipped.',
+            detail: 'Not Easy Apply — needs manual application.',
             processedAt: new Date().toISOString()
           })
+          itemAutoClassified = true
           emit()
 
-        // Easy Apply unavailable (button not found, form didn't open, listing removed): auto-skip
+        // Easy Apply unavailable (button not found, form didn't open, listing removed): keep in queue as 'error'.
         } else if (!result.ok && detailSuggestsEasyApplyUnavailable(resultDetail)) {
-          qlog('queue.skip_ea_unavailable', { itemId: pending.id, jobTitle: pending.jobTitle, detail: resultDetail.slice(0, 120) })
-          const recId = ensureTerminalRecordId(resultDetail || 'Easy Apply not available — auto-skipped.', 'blocked')
-          updateItemStatus(pending.id, 'skipped', {
+          qlog('queue.error_ea_unavailable', { itemId: pending.id, jobTitle: pending.jobTitle, detail: resultDetail.slice(0, 120) })
+          const recId = ensureTerminalRecordId(resultDetail || 'Easy Apply not available.', 'blocked')
+          updateItemStatus(pending.id, 'error', {
             applicationRecordId: recId,
-            detail: 'Easy Apply not available — auto-skipped.',
+            detail: 'Easy Apply not available — try again or apply manually.',
             processedAt: new Date().toISOString()
           })
+          itemAutoClassified = true
           emit()
 
-        // Closed/expired jobs: skip instead of erroring — retrying won't help
+        // Closed/expired jobs: keep in queue as 'error' (user requested every failure stay visible).
         } else if (!result.ok && /job_closed_no_longer_accepting/i.test(resultDetail)) {
-          qlog('queue.skip_job_closed', { itemId: pending.id, jobTitle: pending.jobTitle })
+          qlog('queue.error_job_closed', { itemId: pending.id, jobTitle: pending.jobTitle })
           const recId = ensureTerminalRecordId('Job is no longer accepting applications.', 'blocked')
-          updateItemStatus(pending.id, 'skipped', {
+          updateItemStatus(pending.id, 'error', {
             applicationRecordId: recId,
             detail: 'This position is no longer accepting applications.',
             processedAt: new Date().toISOString()
           })
+          itemAutoClassified = true
           emit()
         } else if (result.recordId) {
           const needsReview = !result.ok && detailSuggestsUnconfirmedEasyApply(result.detail)
           itemNeedsReview = needsReview
-          updateItemStatus(pending.id, result.ok ? 'done' : needsReview ? 'error' : 'skipped', {
+          // Any non-success keeps the item in the queue as 'error' so the user can
+          // retry instead of silently dropping the job. Genuine "can't be applied"
+          // cases (not Easy Apply, job closed, etc.) are skipped above by name.
+          updateItemStatus(pending.id, result.ok ? 'done' : 'error', {
             applicationRecordId: result.recordId,
             detail: result.detail,
             processedAt: new Date().toISOString(),
@@ -542,7 +553,8 @@ async function runLoop(): Promise<void> {
             detail: result.detail,
             stuckFieldLabels: needsReview ? result.stuckFieldLabels : undefined
           })
-          updateItemStatus(pending.id, result.ok ? 'done' : needsReview ? 'error' : 'skipped', {
+          // See note above: keep failed items in queue as 'error' so the user can retry.
+          updateItemStatus(pending.id, result.ok ? 'done' : 'error', {
             applicationRecordId: rec.id,
             detail: result.detail,
             processedAt: new Date().toISOString(),
@@ -568,7 +580,7 @@ async function runLoop(): Promise<void> {
 
         const statusAfterResult = loadQueue().items.find((i) => i.id === pending.id)?.status
         const wasAutoSkipped = statusAfterResult === 'skipped'
-        const hardFail = !result.ok && result.phase !== 'submit' && !itemNeedsReview && !wasAutoSkipped
+        const hardFail = !result.ok && result.phase !== 'submit' && !itemNeedsReview && !wasAutoSkipped && !itemAutoClassified
         if (hardFail) {
           consecutiveFailures++
           const cur = loadQueue()

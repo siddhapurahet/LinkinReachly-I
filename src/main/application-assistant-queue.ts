@@ -9,7 +9,7 @@ import {
   retryQueueItems,
   skipQueueItem
 } from './apply-queue-store'
-import { startApplyQueueRunner, stopApplyQueueRunner } from './apply-queue-runner'
+import { notifyApplyQueueTick, startApplyQueueRunner, stopApplyQueueRunner } from './apply-queue-runner'
 import { thisWeekConnectionCount, todayCount } from './logger'
 import { loadSettings } from './settings'
 import { getServerUsage } from './api-client'
@@ -109,6 +109,7 @@ export function handleApplicationQueueAdd(payload: unknown): ApplyQueueView {
     return { ok: false, detail: 'No valid queue items.' } satisfies ApplyQueueView
   }
   const result = addToQueue(items)
+  notifyApplyQueueTick()
   return {
     ok: true,
     state: result.state,
@@ -185,6 +186,7 @@ export function handleApplicationQueueRetry(payload: unknown): ApplyQueueView {
     }
   }
   const next = ids.size > 0 ? retryQueueItems([...ids]) : retryQueueItems()
+  notifyApplyQueueTick()
   return { ok: true, state: next } satisfies ApplyQueueView
 }
 
@@ -196,6 +198,7 @@ export function handleApplicationQueueSkip(payload: unknown): ApplyQueueView {
   const id = String((payload as { id?: string } | undefined)?.id || '').trim()
   if (!id) return { ok: false, detail: 'Item id required.' } satisfies ApplyQueueView
   const state = skipQueueItem(id)
+  notifyApplyQueueTick()
   return { ok: true, state } satisfies ApplyQueueView
 }
 
@@ -203,6 +206,7 @@ export function handleApplicationQueueRemove(payload: unknown): ApplyQueueView {
   const id = String((payload as { id?: string } | undefined)?.id || '').trim()
   if (!id) return { ok: false, detail: 'Item id required.' } satisfies ApplyQueueView
   const state = removeFromQueue(id)
+  notifyApplyQueueTick()
   return { ok: true, state } satisfies ApplyQueueView
 }
 
@@ -216,5 +220,6 @@ export function handleApplicationQueueClear(): ApplyQueueView {
     } satisfies ApplyQueueView
   }
   const state = clearQueue()
+  notifyApplyQueueTick()
   return { ok: true, state } satisfies ApplyQueueView
 }

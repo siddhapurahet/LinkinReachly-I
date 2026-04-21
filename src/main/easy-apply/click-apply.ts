@@ -280,31 +280,72 @@ async function attemptCdpClick(
 
     appLog.info('[easy-apply] CDP click dispatched — waiting for modal')
     applyTrace('easy_apply:cdp_click_dispatched', { x: cx, y: cy, originalY: by })
-    await new Promise((r) => setTimeout(r, 5000))
 
-    // Verify the click actually opened a modal — CDP command success ≠ modal open
-    const checkExpr = `JSON.stringify({
-      url: location.href,
-      hasModal: !!document.querySelector('.jobs-easy-apply-modal'),
-      hasArtdecoModal: !!document.querySelector('.artdeco-modal[role="dialog"]'),
-      inputCount: document.querySelectorAll('.artdeco-modal input:not([type="hidden"]), .artdeco-modal select, .artdeco-modal textarea, .jobs-easy-apply-modal input:not([type="hidden"]), .jobs-easy-apply-modal select, .jobs-easy-apply-modal textarea').length
-    })`
+    // Modal-open check that ALSO walks LinkedIn's SDUI shadow DOM
+    // (#interop-outlet > shadowRoot > nested shadow roots > .artdeco-modal).
+    // The previous check only queried the light DOM and missed every SDUI
+    // Easy Apply modal — the source of clicked_easy_apply_cdp_no_modal.
+    const checkExpr = `(() => {
+      const SELECTORS = '.jobs-easy-apply-modal, .artdeco-modal[role="dialog"], [role="dialog"][aria-label*="apply" i]';
+      const FIELD_SEL = 'input:not([type="hidden"]), select, textarea, [contenteditable="true"]';
+      function searchAllShadowRoots(root) {
+        const found = { modal: false, fieldCount: 0 };
+        const stack = [root];
+        const visited = new WeakSet();
+        while (stack.length) {
+          const node = stack.pop();
+          if (!node || visited.has(node)) continue;
+          visited.add(node);
+          try {
+            const m = node.querySelector ? node.querySelector(SELECTORS) : null;
+            if (m) {
+              found.modal = true;
+              found.fieldCount += m.querySelectorAll(FIELD_SEL).length;
+            }
+          } catch (e) { /* ignore */ }
+          // Walk into every element's shadowRoot if present.
+          try {
+            const all = node.querySelectorAll ? node.querySelectorAll('*') : [];
+            for (const el of all) {
+              if (el.shadowRoot && !visited.has(el.shadowRoot)) stack.push(el.shadowRoot);
+            }
+          } catch (e) { /* ignore */ }
+        }
+        return found;
+      }
+      const docSearch = searchAllShadowRoots(document);
+      return JSON.stringify({
+        url: location.href,
+        hasModal: docSearch.modal,
+        hasArtdecoModal: docSearch.modal,
+        inputCount: docSearch.fieldCount
+      });
+    })()`
+
+    // Poll the page for up to 8 seconds — modal can take longer to render
+    // on slow LinkedIn loads, especially the SDUI variant.
     let checkParsed: { url?: string; hasModal?: boolean; hasArtdecoModal?: boolean; inputCount?: number } | null = null
-    try {
-      const checkRes = await sendCommand('CDP_COMMAND', {
-        tabId,
-        method: 'Runtime.evaluate',
-        params: { expression: checkExpr, returnByValue: true }
-      }, 10_000)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const checkVal = (checkRes as any)?.data?.result?.result?.value
-      checkParsed = checkVal ? JSON.parse(checkVal) : null
-    } catch (checkErr) {
-      appLog.warn('[easy-apply] CDP post-click state check failed:', checkErr instanceof Error ? checkErr.message : String(checkErr))
+    const POLL_DEADLINE = Date.now() + 8000
+    const POLL_INTERVAL_MS = 600
+    while (Date.now() < POLL_DEADLINE) {
+      try {
+        const checkRes = await sendCommand('CDP_COMMAND', {
+          tabId,
+          method: 'Runtime.evaluate',
+          params: { expression: checkExpr, returnByValue: true }
+        }, 10_000)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const checkVal = (checkRes as any)?.data?.result?.result?.value
+        checkParsed = checkVal ? JSON.parse(checkVal) : null
+      } catch (checkErr) {
+        appLog.warn('[easy-apply] CDP post-click state check failed:', checkErr instanceof Error ? checkErr.message : String(checkErr))
+      }
+      const found = !!(checkParsed?.hasModal || checkParsed?.hasArtdecoModal || (checkParsed?.inputCount ?? 0) > 0)
+      if (found) break
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
     }
 
     try { await sendCommand('CDP_DETACH', { tabId }, 5_000) } catch (err) { appLog.warn('[easy-apply] CDP detach after click failed (best-effort):', err instanceof Error ? err.message : String(err)) }
-    await new Promise((r) => setTimeout(r, 1500))
 
     const modalDetected = !!(checkParsed?.hasModal || checkParsed?.hasArtdecoModal || (checkParsed?.inputCount ?? 0) > 0)
     appLog.info('[easy-apply] CDP click post-check', { modalDetected, ...checkParsed })

@@ -34,6 +34,7 @@ import {
   testApiKey
 } from './llm'
 import {
+  appendMainLog,
   clearMainLog,
   loadLogHistory,
   loadRecentConnectionInvites,
@@ -169,7 +170,6 @@ function targetsToCsv(targets: TargetRow[]): string {
 }
 
 function appendHistoryEvent(entry: Omit<OutreachLogEntry, 'timestamp' | 'status'> & { status?: LogStatus }): void {
-  const { appendMainLog } = require('./logger') as typeof import('./logger')
   appendMainLog({ ...entry, timestamp: new Date().toISOString(), status: entry.status || 'info' })
 }
 
