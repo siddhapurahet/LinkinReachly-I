@@ -8883,22 +8883,29 @@ button.queue-accordion__remove:hover {
 }
 
 .target-list__send-input {
-  width: 3.5rem;
-  padding: 0.3rem 0.4rem;
-  border: 1px solid var(--neutral-200);
-  border-radius: var(--radius-xs);
-  background: var(--neutral-50);
+  width: 3.25rem;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid var(--neutral-300);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--surface, #fff);
   color: var(--neutral-900);
-  font-size: var(--text-body);
+  font-size: var(--text-micro);
   font-weight: var(--font-weight-medium);
   text-align: center;
-  -moz-appearance: textfield;
+  line-height: 1.2;
+  cursor: text;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.target-list__send-input::-webkit-outer-spin-button,
-.target-list__send-input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
+.target-list__send-input:hover {
+  border-color: var(--neutral-400);
+}
+
+.target-list__send-input:focus,
+.target-list__send-input:focus-visible {
+  outline: none;
+  border-color: var(--accent-600, #2563eb);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
 }
 
 .target-list__send-of {
@@ -9043,6 +9050,19 @@ button.queue-accordion__remove:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+a.target-list__person-url {
+  color: var(--accent-600, #2563eb);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+a.target-list__person-url:hover,
+a.target-list__person-url:focus-visible {
+  color: var(--accent-700, #1d4ed8);
+  text-decoration-thickness: 2px;
+  outline: none;
 }
 
 .target-list__person-badge {
@@ -14509,9 +14529,29 @@ select[aria-busy="true"] {
   border-radius: 14px;
   padding: 10px 10px 10px 16px;
 }
+/* Lock both the search bar inputs and the find/stop button to the same fixed
+ * height so they sit perfectly flush regardless of browser-default input
+ * line-height quirks. 44px is a comfortable touch target that matches the
+ * input's visual height under .inp + .inp-lg. */
+.j-search .inp.inp-lg {
+  height: 44px;
+  padding-top: 0;
+  padding-bottom: 0;
+  box-sizing: border-box;
+}
+
 .j-search .btn-primary {
   border-radius: 10px;
-  padding: 12px 20px;
+  height: 44px;
+  min-height: 0;
+  padding: 0 var(--space-6);
+  border: 1px solid transparent;
+  font-size: var(--text-body-sm);
+  line-height: 1;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   box-shadow: 0 2px 8px rgba(188, 1, 0, 0.2);
 }
 

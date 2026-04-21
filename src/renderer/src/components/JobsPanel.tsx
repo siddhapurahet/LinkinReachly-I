@@ -326,8 +326,6 @@ export function JobsPanel({
   const pillSearchTriggerRef = useRef(false)
   /** True once we've attempted to pre-fill keywords from the user's profile/background. */
   const resumeKeywordsFilled = useRef(false)
-  /** True once auto-search-on-first-land has fired (prevents re-triggering). */
-  const autoSearchOnFirstLandRef = useRef(false)
   const suppressAutoStartRef = useRef(false)
 
   /**
@@ -1014,21 +1012,9 @@ export function JobsPanel({
     void searchJobs()
   }, [keywords, location, chromeReady, state.searching, state.smartSearching, searchJobs])
 
-  /* Auto-run first search when keywords were pre-filled from resume/background.
-     Only fires once, skips if user has already typed or if onboarding flow is active. */
-  useEffect(() => {
-    if (!settingsReady || !chromeReady) return
-    if (state.hasSearched || state.searching || state.smartSearching) return
-    if (!keywords.trim()) return
-    if (userEditedJobSearchRef.current) return
-    if (initialSearch) return
-    if (autoSearchOnFirstLandRef.current) return
-    autoSearchOnFirstLandRef.current = true
-    const timer = setTimeout(() => {
-      void searchJobs()
-    }, 500)
-    return () => clearTimeout(timer)
-  }, [settingsReady, chromeReady, keywords, state.hasSearched, state.searching, state.smartSearching, initialSearch, searchJobs])
+  /* Auto-search on first land was removed: it could re-fire on HMR remounts and
+     dev-mode component-tree churn, repeatedly triggering long LinkedIn searches
+     the user didn't ask for. Users now explicitly click Find Jobs. */
   useEffect(() => {
     if (state.hasSearched && state.listings.length > 0 && !state.searching && !state.smartSearching) {
       setSearchCompact(true)
@@ -1461,8 +1447,33 @@ export function JobsPanel({
                   className={`jobs-search-compact__pill ${state.hasScreened ? 'jobs-search-compact__pill--active' : 'jobs-search-compact__pill--inactive'}`}
                   role="button"
                   tabIndex={0}
-                  title={state.hasScreened ? 'AI screening active' : 'AI screening (click to enable)'}
-                  onClick={() => { if (!state.hasScreened) void screenJobs() }}
+                  title={
+                    state.hasScreened
+                      ? 'AI screening active — click to re-screen'
+                      : criteria.trim()
+                        ? 'Score jobs with AI against your criteria'
+                        : 'Add criteria below, then click to score jobs with AI'
+                  }
+                  onClick={() => {
+                    if (state.hasScreened || !criteria.trim()) {
+                      // No criteria yet (or already screened) — open the form so they can edit
+                      const el = document.querySelector('.jobs-screening-collapsible') as HTMLDetailsElement | null
+                      if (el) {
+                        el.open = true
+                        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                        const ta = el.querySelector('#jobs-criteria') as HTMLTextAreaElement | null
+                        if (ta) setTimeout(() => ta.focus(), 250)
+                      }
+                      return
+                    }
+                    void screenJobs()
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      (e.currentTarget as HTMLElement).click()
+                      e.preventDefault()
+                    }
+                  }}
                 >
                   {state.hasScreened ? '\u25A0' : '\u25CB'} Screen
                 </span>
@@ -1524,7 +1535,6 @@ export function JobsPanel({
                     type="button"
                     className="btn btn-primary btn-lg"
                     disabled={smartSearchCancelPending || (!(state.searching || state.smartSearching) && (!keywords.trim() || !chromeReady))}
-                    aria-busy={state.searching || state.smartSearching}
                     aria-describedby={
                       !keywords.trim() ? 'jobs-keywords-hint'
                       : !chromeReady ? 'jobs-chrome-hint'
@@ -1626,6 +1636,14 @@ export function JobsPanel({
         {applyQueue?.running && activeTab === 'results' && (
           <div className="jobs-queue-banner mb-sm">
             {applyQueueTile}
+          </div>
+        )}
+
+        {activeTab === 'results' && state.hasSearched && state.listings.length === 0 && !state.searchError && (
+          <div className="empty-state mt-sm" role="status">
+            <div className="empty-state__icon" aria-hidden="true">{'\u2609'}</div>
+            <h3 className="empty-state__title">No matching jobs found</h3>
+            <p className="empty-state__body">Try different keywords, broaden your location, relax the &quot;Posted within&quot; filter in Settings, or check that LinkedIn is open in Chrome.</p>
           </div>
         )}
 

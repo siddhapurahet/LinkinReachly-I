@@ -113,6 +113,20 @@ export function ApplyQueueTile({
     return 4
   }, [showFirstSessionGuide, applyQueue.items.length, answerBankCount, queueStats.done])
 
+  // Derive a short phase label from the pipeline's lastDetail so the hero
+  // card rotates text ("Opening job page", "Filling out form", …) instead
+  // of showing a static "Applying now" that looks stuck.
+  const heroPhaseLabel = useMemo(
+    () => activePhaseLabel(applyQueue.lastDetail) || 'Applying',
+    [applyQueue.lastDetail]
+  )
+
+  // V4 collapsed accordion: only one card expanded at a time
+  const [expandedItemId, setExpandedItemId] = useState<string | null>(null)
+  const toggleAccordion = useCallback((id: string) => {
+    setExpandedItemId(prev => prev === id ? null : id)
+  }, [])
+
   const guideContent: Record<number, { title: string; body: string }> = {
     1: { title: 'Review your matches', body: 'Search for jobs and click the + button on ones that interest you to save them to Ready to apply.' },
     2: { title: 'Set up Saved Answers', body: 'Add answers to common screening questions so forms auto-fill during applications.' },
@@ -153,20 +167,6 @@ export function ApplyQueueTile({
     : null
   const remaining = queueStats.pending + queueStats.activeCount
   const errorCount = queueStats.error - queueStats.resumeErr
-
-  // Derive a short phase label from the pipeline's lastDetail so the hero
-  // card rotates text ("Opening job page", "Filling out form", …) instead
-  // of showing a static "Applying now" that looks stuck.
-  const heroPhaseLabel = useMemo(
-    () => activePhaseLabel(applyQueue.lastDetail) || 'Applying',
-    [applyQueue.lastDetail]
-  )
-
-  // V4 collapsed accordion: only one card expanded at a time
-  const [expandedItemId, setExpandedItemId] = useState<string | null>(null)
-  const toggleAccordion = useCallback((id: string) => {
-    setExpandedItemId(prev => prev === id ? null : id)
-  }, [])
 
   return (
     <div className="queue-hero queue-hero--v3">

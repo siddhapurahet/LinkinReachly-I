@@ -214,7 +214,9 @@ export default function App() {
     }
   }, [model.settings, model.settingsHydrating])
 
-  // Profile gate: check if name + email + resume exist
+  // Profile gate: check if name + email + resume exist.
+  // Sticky once passed: a transient applicantGet failure (401, race during settings churn,
+  // etc.) must not flip the user back to the gate screen mid-session and wipe rendered jobs.
   useEffect(() => {
     if (model.settingsHydrating || !model.settings) return
     void (async () => {
@@ -226,12 +228,13 @@ export default function App() {
           const hasPhone = !!r.profile.basics.phone?.trim()
           const hasResume = r.profile.assets.some((a: { kind: string }) => a.kind === 'resume')
           const hasEducation = Array.isArray(r.profile.background?.educationHistory) && r.profile.background.educationHistory.length > 0
-          setProfileGatePassed(hasName && hasEmail && hasPhone && hasResume && hasEducation)
-        } else {
-          setProfileGatePassed(false)
+          const passes = hasName && hasEmail && hasPhone && hasResume && hasEducation
+          setProfileGatePassed((prev) => (prev === true && !passes ? true : passes))
         }
+        // On !ok / fetch error: leave the gate as-is. We don't downgrade a previously
+        // passing profile based on a transient failure.
       } catch {
-        setProfileGatePassed(false)
+        // Same reasoning — keep prior state on error.
       }
     })()
   }, [model.settingsHydrating, model.settings, model.settings?.resumeFileName])

@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import type { TargetRow } from '@core/types'
+import { getLoa } from '@/loa-client'
 
 interface TargetListPreviewProps {
   targets: TargetRow[]
@@ -115,25 +116,10 @@ export const TargetListPreview = React.memo(function TargetListPreview({
         )}
       </div>
 
-      {targets.length > 0 && (
-        <div className="target-list__range">
-          <input
-            type="range"
-            className="target-list__slider"
-            min={0}
-            max={includedCount}
-            value={effectiveCount}
-            onChange={(e) => {
-              const v = parseInt(e.target.value, 10)
-              if (v >= includedCount) {
-                onSendLimitChange(null)
-              } else {
-                onSendLimitChange(v)
-              }
-            }}
-            aria-label={`Send to ${effectiveCount} people`}
-          />
-        </div>
+      {targets.length > 0 && sendLimit != null && sendLimit < includedCount && (
+        <p className="target-list__limit-hint muted caption">
+          Sending to the first {effectiveCount} of {includedCount} selected — use &quot;Send to&quot; above to change.
+        </p>
       )}
 
       {targets.length > 0 && (
@@ -182,7 +168,23 @@ export const TargetListPreview = React.memo(function TargetListPreview({
                     ) : (
                       <span />
                     )}
-                    <span className="target-list__person-url">{shortUrl(row.profileUrl)}</span>
+                    {row.profileUrl ? (
+                      <a
+                        href={row.profileUrl}
+                        className="target-list__person-url"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          void getLoa().openExternalUrl(row.profileUrl!).catch(() => {})
+                        }}
+                        title={`Open ${row.profileUrl} in your browser`}
+                        rel="noreferrer noopener"
+                      >
+                        {shortUrl(row.profileUrl)}
+                      </a>
+                    ) : (
+                      <span className="target-list__person-url" />
+                    )}
                     {!willSend && !excluded ? (
                       <span className="target-list__person-badge">over limit</span>
                     ) : (
