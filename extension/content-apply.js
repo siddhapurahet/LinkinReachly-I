@@ -1390,7 +1390,6 @@ var clickEasyApply = async function() {
         detail: dismissedDraft ? 'clicked_easy_apply_discarded_draft' : 'clicked_easy_apply'
       }
     }
-  }
 }
 
 /**
@@ -2193,7 +2192,7 @@ var extractJobListings = async function(payload) {
     return ''
   }
 
-  async function waitForDetailPanelSync(expectedJobUrl, timeoutMs = 2600) {
+  async function waitForDetailPanelSync(expectedJobUrl, timeoutMs = 1500) {
     const expected = normalizeJobUrl(expectedJobUrl || '')
     if (!expected) return null
     const deadline = Date.now() + timeoutMs
@@ -2204,7 +2203,7 @@ var extractJobListings = async function(payload) {
         if (current === expected) return true
         sawExplicitOtherJob = true
       }
-      await sleep(120)
+      await sleep(70)
     }
     return sawExplicitOtherJob ? false : null
   }
@@ -2245,14 +2244,28 @@ var extractJobListings = async function(payload) {
           clickTarget.click()
         }
         // Wait for right panel to render
-        await sleep(350 + Math.random() * 200)
-        // Safety: if clicking somehow navigated away from the search results, go back
+        await sleep(180 + Math.random() * 120)
+        // If clicking navigated to /jobs/view/, harvest the description from THIS
+        // page before going back — otherwise the click was wasted time.
         if (window.location.pathname.includes('/jobs/view/')) {
-          console.warn('[LOA] enrichment click navigated away to /jobs/view/, going back')
+          try {
+            const descEl = document.querySelector('.jobs-description__content, .jobs-box__html-content, #job-details')
+            const description = descEl ? descEl.innerText.trim().slice(0, 3000) : ''
+            if (description && description.length > 50) {
+              item.description = description
+              try { applyMeta = inferApplyCta(document) } catch { /* ignore */ }
+            }
+          } catch { /* ignore */ }
           window.history.back()
-          await sleep(800)
+          await sleep(600)
+          // Already have description; skip panel sync wait for this card.
+          enrichCompleted++
+          try {
+            chrome.runtime.sendMessage({ type: 'ENRICH_PROGRESS', completed: enrichCompleted, total: toEnrich.length })
+          } catch { /* best-effort */ }
+          continue
         }
-        panelSync = await waitForDetailPanelSync(item.jobUrl, 2600)
+        panelSync = await waitForDetailPanelSync(item.jobUrl, 1500)
         if (panelSync === false) {
           console.warn('[LOA] enrichment panel did not sync to clicked card; skipping panel-derived metadata')
         } else {
