@@ -226,7 +226,8 @@ describe('apply-queue-runner', () => {
     })
     startApplyQueueRunner()
 
-    await vi.waitUntil(() => loadQueue().items[0]?.status === 'skipped', { timeout: 5000 })
+    // Failed apply no longer removes the item from Ready to apply — it stays as 'error' so the user can retry.
+    await vi.waitUntil(() => loadQueue().items[0]?.status === 'error', { timeout: 5000 })
     const recordsForJob = loadApplicationHistory().filter((r) => r.jobUrl === 'https://example.com/j')
     expect(recordsForJob.length).toBe(1)
     expect(recordsForJob[0]?.id).toBe(existing.id)
@@ -269,7 +270,8 @@ describe('apply-queue-runner', () => {
     })
     startApplyQueueRunner()
 
-    await vi.waitUntil(() => loadQueue().items[0]?.status === 'skipped', { timeout: 5000 })
+    // Failed apply no longer removes the item from Ready to apply — it stays as 'error' so the user can retry.
+    await vi.waitUntil(() => loadQueue().items[0]?.status === 'error', { timeout: 5000 })
     const recordsForJob = loadApplicationHistory().filter((r) => r.jobUrl === jobUrl)
     expect(recordsForJob.length).toBe(1)
     expect(recordsForJob[0]?.id).toBe(existing.id)
@@ -291,7 +293,8 @@ describe('apply-queue-runner', () => {
     addToQueue([queueItem('job-skip-hardfail', 'linkedin_easy_apply')])
     startApplyQueueRunner()
 
-    await vi.waitUntil(() => loadQueue().items[0]?.status === 'skipped', { timeout: 5000 })
+    // Failed apply no longer removes the item from Ready to apply — it stays as 'error' so the user can retry.
+    await vi.waitUntil(() => loadQueue().items[0]?.status === 'error', { timeout: 5000 })
     expect(loadQueue().lastErrorCode).not.toBe('easy_apply_failed')
   })
 

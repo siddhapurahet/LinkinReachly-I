@@ -32,7 +32,10 @@ describe('JobsPanel smart search progress', () => {
     vi.restoreAllMocks()
   })
 
-  it('auto-starts a prefilled search without hook-order or TDZ errors', async () => {
+  it('renders with prefilled keywords without hook-order or TDZ errors and does not auto-start a search', async () => {
+    // The auto-first-land effect was removed intentionally — it could re-fire on
+    // HMR remounts and dev-mode component-tree churn, repeatedly triggering long
+    // LinkedIn searches the user didn't ask for. Searches are now always explicit.
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
     const jobsSmartSearch = vi.fn().mockResolvedValue({
       ok: true,
@@ -58,12 +61,11 @@ describe('JobsPanel smart search progress', () => {
 
     render(<JobsPanel aiConfigured chromeReady settingsReady />)
 
-    await waitFor(
-      () => {
-        expect(jobsSmartSearch).toHaveBeenCalledTimes(1)
-      },
-      { timeout: 3_000 }
-    )
+    // Give the renderer ample time — if auto-start were still wired up, the
+    // 500ms setTimeout + React commit would fire jobsSmartSearch well inside
+    // this window. Expect it NOT to fire.
+    await new Promise((r) => setTimeout(r, 1_200))
+    expect(jobsSmartSearch).not.toHaveBeenCalled()
 
     const loggedErrors = consoleError.mock.calls.flat().join(' ')
     expect(loggedErrors).not.toContain("Cannot access 'searchJobs' before initialization")
