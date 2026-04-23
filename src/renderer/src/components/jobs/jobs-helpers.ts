@@ -197,6 +197,7 @@ export function humanizeQueueDetail(detail?: string): string | null {
   if (/easy_apply_not_available/i.test(detail)) return 'This job requires applying on the company site \u2014 skipped'
   if (/job_closed_no_longer_accepting/i.test(detail)) return 'Job is no longer accepting applications'
   if (/easy_apply_button_not_found/i.test(detail)) return 'Easy Apply button not found on the job page'
+  if (/clicked_easy_apply_cdp_no_modal|no_button_for_js_fallback/i.test(detail)) return "The Easy Apply form didn’t open on this page. The job may have been removed or may not support Easy Apply."
   if (/extension.*not connected|bridge.*disconnected/i.test(detail)) return 'Chrome extension disconnected'
   if (/verification_required|challenge|captcha/i.test(detail)) return 'Action needed in Chrome \u2014 check your LinkedIn tab'
   if (/easy_apply_failed/i.test(detail)) return 'Application could not be completed automatically'

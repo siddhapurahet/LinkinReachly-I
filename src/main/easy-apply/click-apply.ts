@@ -280,31 +280,96 @@ async function attemptCdpClick(
 
     appLog.info('[easy-apply] CDP click dispatched — waiting for modal')
     applyTrace('easy_apply:cdp_click_dispatched', { x: cx, y: cy, originalY: by })
-    await new Promise((r) => setTimeout(r, 5000))
 
-    // Verify the click actually opened a modal — CDP command success ≠ modal open
-    const checkExpr = `JSON.stringify({
-      url: location.href,
-      hasModal: !!document.querySelector('.jobs-easy-apply-modal'),
-      hasArtdecoModal: !!document.querySelector('.artdeco-modal[role="dialog"]'),
-      inputCount: document.querySelectorAll('.artdeco-modal input:not([type="hidden"]), .artdeco-modal select, .artdeco-modal textarea, .jobs-easy-apply-modal input:not([type="hidden"]), .jobs-easy-apply-modal select, .jobs-easy-apply-modal textarea').length
-    })`
+    // Modal-open check that ALSO walks LinkedIn's SDUI shadow DOM
+    // (#interop-outlet > shadowRoot > nested shadow roots > .artdeco-modal).
+    // The previous check only queried the light DOM and missed every SDUI
+    // Easy Apply modal — the source of clicked_easy_apply_cdp_no_modal.
+    const checkExpr = `(() => {
+      // Primary selectors — the most specific modal classes.
+      const STRICT_SELECTORS = '.jobs-easy-apply-modal, .artdeco-modal[role="dialog"], [role="dialog"][aria-label*="apply" i]';
+      // Permissive fallback: any reasonably-sized [role="dialog"] whose
+      // text hints at the Easy Apply surface (contact info, resume, etc.).
+      // Mirrors findModal() in easy-apply/shared.ts:cdpExtractFormFields.
+      const FIELD_SEL = 'input:not([type="hidden"]), select, textarea, [contenteditable="true"]';
+      const APPLY_TEXT_HINTS = ['easy apply', 'submit application', 'contact info', 'resume', 'work experience', 'additional question'];
+      function searchAllShadowRoots(root) {
+        const found = { modal: false, fieldCount: 0 };
+        const stack = [root];
+        const visited = new WeakSet();
+        while (stack.length) {
+          const node = stack.pop();
+          if (!node || visited.has(node)) continue;
+          visited.add(node);
+          try {
+            const m = node.querySelector ? node.querySelector(STRICT_SELECTORS) : null;
+            if (m) {
+              found.modal = true;
+              found.fieldCount += m.querySelectorAll(FIELD_SEL).length;
+            }
+            if (!found.modal && node.querySelectorAll) {
+              // Fallback: scan any sizeable dialog/modal whose text matches
+              // Easy Apply hints. Catches variants without the apply aria-label.
+              const dialogs = node.querySelectorAll('[role="dialog"], .artdeco-modal');
+              for (const d of dialogs) {
+                try {
+                  const r = d.getBoundingClientRect ? d.getBoundingClientRect() : { width: 0, height: 0 };
+                  if (r.width < 200 || r.height < 200) continue;
+                  const txt = (d.textContent || '').toLowerCase();
+                  if (APPLY_TEXT_HINTS.some((h) => txt.includes(h))) {
+                    found.modal = true;
+                    found.fieldCount += d.querySelectorAll(FIELD_SEL).length;
+                    break;
+                  }
+                } catch (_e) { /* ignore */ }
+              }
+            }
+          } catch (e) { /* ignore */ }
+          // Walk into every element's shadowRoot if present.
+          try {
+            const all = node.querySelectorAll ? node.querySelectorAll('*') : [];
+            for (const el of all) {
+              if (el.shadowRoot && !visited.has(el.shadowRoot)) stack.push(el.shadowRoot);
+            }
+          } catch (e) { /* ignore */ }
+        }
+        return found;
+      }
+      const docSearch = searchAllShadowRoots(document);
+      return JSON.stringify({
+        url: location.href,
+        hasModal: docSearch.modal,
+        hasArtdecoModal: docSearch.modal,
+        inputCount: docSearch.fieldCount
+      });
+    })()`
+
+    // Poll the page for up to 12 seconds — modal can take longer to render
+    // on slow LinkedIn loads, especially the SDUI variant. 8s was too short
+    // for cold detail-panel loads, producing false clicked_easy_apply_cdp_no_modal
+    // errors on jobs that actually had Easy Apply available.
     let checkParsed: { url?: string; hasModal?: boolean; hasArtdecoModal?: boolean; inputCount?: number } | null = null
-    try {
-      const checkRes = await sendCommand('CDP_COMMAND', {
-        tabId,
-        method: 'Runtime.evaluate',
-        params: { expression: checkExpr, returnByValue: true }
-      }, 10_000)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const checkVal = (checkRes as any)?.data?.result?.result?.value
-      checkParsed = checkVal ? JSON.parse(checkVal) : null
-    } catch (checkErr) {
-      appLog.warn('[easy-apply] CDP post-click state check failed:', checkErr instanceof Error ? checkErr.message : String(checkErr))
+    const POLL_DEADLINE = Date.now() + 12000
+    const POLL_INTERVAL_MS = 600
+    while (Date.now() < POLL_DEADLINE) {
+      try {
+        const checkRes = await sendCommand('CDP_COMMAND', {
+          tabId,
+          method: 'Runtime.evaluate',
+          params: { expression: checkExpr, returnByValue: true }
+        }, 10_000)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const checkVal = (checkRes as any)?.data?.result?.result?.value
+        checkParsed = checkVal ? JSON.parse(checkVal) : null
+      } catch (checkErr) {
+        appLog.warn('[easy-apply] CDP post-click state check failed:', checkErr instanceof Error ? checkErr.message : String(checkErr))
+      }
+      const found = !!(checkParsed?.hasModal || checkParsed?.hasArtdecoModal || (checkParsed?.inputCount ?? 0) > 0)
+      if (found) break
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
     }
 
     try { await sendCommand('CDP_DETACH', { tabId }, 5_000) } catch (err) { appLog.warn('[easy-apply] CDP detach after click failed (best-effort):', err instanceof Error ? err.message : String(err)) }
-    await new Promise((r) => setTimeout(r, 1500))
 
     const modalDetected = !!(checkParsed?.hasModal || checkParsed?.hasArtdecoModal || (checkParsed?.inputCount ?? 0) > 0)
     appLog.info('[easy-apply] CDP click post-check', { modalDetected, ...checkParsed })
@@ -332,7 +397,11 @@ async function checkFormAlreadyOpen(): Promise<{ formOpen: boolean; fieldCount: 
     const label = String(f.label || '').toLowerCase()
     return label && !label.includes('search message') && !label.includes('compose message') && label !== 'search'
   })
-  if (modalCheck.ok && realFields.length >= 2) {
+  // >= 1 is enough — some first-step surfaces only show a single field
+  // (resume upload, phone number, etc.). Requiring 2+ caused false negatives
+  // that surfaced as "clicked_easy_apply_cdp_no_modal" on jobs that in fact
+  // had an open Easy Apply form.
+  if (modalCheck.ok && realFields.length >= 1) {
     appLog.info('[easy-apply] Easy Apply button not found, but form is already open — skipping click', { fieldCount: realFields.length })
     applyTrace('easy_apply:form_already_open', { fieldsInCheck: realFields.length })
     return { formOpen: true, fieldCount: realFields.length }
@@ -600,7 +669,12 @@ export async function easyApplyClickApplyButton(
       if (!check.formOpen) {
         const detail = String(clickResult?.detail || '')
         applyTrace('easy_apply:click_apply_failed', { detail: detail.slice(0, 300), ...check })
-        return { earlyExit: { ok: false, phase: 'click_apply', detail: detail || 'Could not find Easy Apply button.' }, clickResult, sduiApplyUrl: undefined, cdpClickSucceeded }
+        // Don't leak raw CDP diagnostic tokens into the UI. Keep the token
+        // in applyTrace above for debugging, but surface a humanized message.
+        const userDetail = /clicked_easy_apply_cdp_no_modal|no_button_for_js_fallback/i.test(detail)
+          ? "The Easy Apply form didn't open on this page. The job may have been removed or may not support Easy Apply."
+          : detail || 'Could not find Easy Apply button.'
+        return { earlyExit: { ok: false, phase: 'click_apply', detail: userDetail }, clickResult, sduiApplyUrl: undefined, cdpClickSucceeded }
       }
     }
     // Wait for modal to render
