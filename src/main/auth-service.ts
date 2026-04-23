@@ -99,6 +99,14 @@ export function updatePlanState(partial: Partial<UserPlanState>): void {
 }
 
 export function getPlanState(): UserPlanState {
+  // Recompute trial state on every read so `trialDaysRemaining` stays
+  // accurate as calendar days tick over without requiring a separate
+  // `updatePlanState` call.
+  const trial = computeTrialState(_planState.trialStartedAt)
+  _planState.isTrialing = trial.isTrialing
+  _planState.trialDaysRemaining = trial.daysRemaining
+  _planState.trialEndsAt = trial.endsAt
+
   const devPlan = process.env.LR_DEV_PLAN as UserPlan | undefined
   if (devPlan && (devPlan === 'free' || devPlan === 'plus')) {
     const limits = PLAN_LIMITS[devPlan]
